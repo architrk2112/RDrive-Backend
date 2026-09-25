@@ -4,6 +4,7 @@ const requireAuth = (req, res, next) => {
   const token = req.cookies?.token;
 
   if (!token) {
+    console.log("")
     return res.status(401).json({ message: 'Authentication required' });
   }
 

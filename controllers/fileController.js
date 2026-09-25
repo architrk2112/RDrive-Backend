@@ -94,6 +94,37 @@ const downloadFile = async (req, res) => {
     }
 };
 
+const renameFile = async (req, res) => {
+    try {
+        const { name } = req.body;
+        const trimmedName = String(name || '').trim();
+
+        if (!trimmedName) {
+            return res.status(400).json({ message: 'File name is required' });
+        }
+
+        const fileDoc = await File.findOne({
+            _id: req.params.fileId,
+            userId: req.user.id,
+        });
+
+        if (!fileDoc) {
+            return res.status(404).json({ message: 'File not found' });
+        }
+
+        fileDoc.name = trimmedName;
+        await fileDoc.save();
+
+        return res.status(200).json({
+            message: 'File renamed successfully',
+            file: fileDoc,
+        });
+    } catch (error) {
+        console.error('Rename file error:', error);
+        return res.status(500).json({ message: 'File rename failed' });
+    }
+};
+
 const updateFileVisibility = async (req, res) => {
     try {
         const { visibility } = req.body;
@@ -159,6 +190,7 @@ module.exports = {
     upload,
     uploadFile,
     downloadFile,
+    renameFile,
     updateFileVisibility,
     deleteFile,
 };

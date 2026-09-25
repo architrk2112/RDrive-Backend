@@ -2,11 +2,12 @@ const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const { OAuth2Client } = require('google-auth-library');
 const User = require('../models/user');
+require('dotenv').config();
 
+const backendOrigin = (process.env.BACKEND_URL || 'http://localhost:5000').replace(/\/api$/, '').replace(/\/+$/, '');
+const frontendOrigin = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, '');
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-const FRONTEND_URL = 'http://localhost:5173';
-const BACKEND_URL = 'http://localhost:5000/api';
-const GOOGLE_REDIRECT_URI = `${BACKEND_URL}/auth/callback`;
+const GOOGLE_REDIRECT_URI = `${backendOrigin}/api/auth/callback`;
 
 const buildGoogleAuthUrl = () => {
   const googleAuthUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
@@ -77,10 +78,12 @@ const generateAppToken = (user) => {
 };
 
 const setAuthCookie = (res, token) => {
+  const isProduction = process.env.NODE_ENV === 'production';
+
   res.cookie('token', token, {
     httpOnly: true,
-    sameSite: 'lax',
-    secure: false,
+    sameSite: isProduction ? 'none' : 'lax',
+    secure: isProduction,
     maxAge: 7 * 24 * 60 * 60 * 1000,
   });
 };
@@ -107,7 +110,7 @@ const googleCallback = async (req, res) => {
     const appToken = generateAppToken(user);
 
     setAuthCookie(res, appToken);
-    return res.redirect(`${FRONTEND_URL}/drive`);
+    return res.redirect(`${frontendOrigin}/drive`);
   } catch (error) {
     console.error('Google OAuth failed:', error.response?.data || error.message);
     return res.status(400).json({ message: 'Google authentication failed' });

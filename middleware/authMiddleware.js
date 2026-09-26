@@ -1,20 +1,23 @@
-const jwt = require('jsonwebtoken');
+const passport = require('../config/passport');
 
 const requireAuth = (req, res, next) => {
-  const token = req.cookies?.token;
+  passport.authenticate('jwt', { session: false }, (error, user) => {
+    if (error) {
+      return res.status(401).json({ message: 'Invalid or expired token' });
+    }
 
-  if (!token) {
-    console.log("")
-    return res.status(401).json({ message: 'Authentication required' });
-  }
+    if (!user) {
+      return res.status(401).json({ message: 'Authentication required' });
+    }
 
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
+    req.user = {
+      id: user._id,
+      email: user.email,
+      name: user.name,
+    };
+
     return next();
-  } catch (error) {
-    return res.status(401).json({ message: 'Invalid or expired token' });
-  }
+  })(req, res, next);
 };
 
 module.exports = { requireAuth };

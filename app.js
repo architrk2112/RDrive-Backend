@@ -4,6 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
 const morgan = require('morgan');
+const passport = require('./config/passport');
 const authRoutes = require('./routes/authRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
 const folderRoutes = require('./routes/folderRoutes');
@@ -14,12 +15,13 @@ const app = express();
 app.use(morgan('dev'));
 app.use(express.json());
 app.use(cookieParser());
-app.use(
-  cors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:5173',
-    credentials: true,
-  })
-);
+app.use(passport.initialize());
+// app.use(
+//   cors({
+//     origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+//     credentials: true,
+//   })
+// );
 
 app.get('/api/health', (req, res) => {
   res.status(200).json({

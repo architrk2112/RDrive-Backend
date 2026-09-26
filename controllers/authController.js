@@ -1,69 +1,8 @@
-const axios = require('axios');
 const jwt = require('jsonwebtoken');
-const { OAuth2Client } = require('google-auth-library');
-const User = require('../models/user');
+const passport = require('../config/passport');
 require('dotenv').config();
 
-const backendOrigin = (process.env.BACKEND_URL || 'http://localhost:5000').replace(/\/api$/, '').replace(/\/+$/, '');
 const frontendOrigin = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/+$/, '');
-const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
-const GOOGLE_REDIRECT_URI = `${backendOrigin}/api/auth/callback`;
-
-const buildGoogleAuthUrl = () => {
-  const googleAuthUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-
-  googleAuthUrl.search = new URLSearchParams({
-    client_id: process.env.GOOGLE_CLIENT_ID,
-    redirect_uri: GOOGLE_REDIRECT_URI,
-    response_type: 'code',
-    scope: 'openid email profile',
-    access_type: 'offline',
-    prompt: 'consent',
-  }).toString();
-
-  return googleAuthUrl.toString();
-};
-
-const exchangeGoogleCodeForTokens = async (code) => {
-  const tokenResponse = await axios.post('https://oauth2.googleapis.com/token', {
-    code,
-    client_id: process.env.GOOGLE_CLIENT_ID,
-    client_secret: process.env.GOOGLE_CLIENT_SECRET,
-    redirect_uri: GOOGLE_REDIRECT_URI,
-    grant_type: 'authorization_code',
-  });
-
-  return tokenResponse.data;
-};
-
-const verifyGoogleUser = async (googleIdToken) => {
-  const ticket = await googleClient.verifyIdToken({
-    idToken: googleIdToken,
-    audience: process.env.GOOGLE_CLIENT_ID,
-  });
-
-  const payload = ticket.getPayload();
-
-  if (!payload || !payload.email_verified) {
-    throw new Error('Google email is not verified');
-  }
-
-  return payload;
-};
-
-const findOrCreateGoogleUser = async (googleUserPayload) => {
-  let user = await User.findOne({ email: googleUserPayload.email });
-
-  if (!user) {
-    user = await User.create({
-      googleId: googleUserPayload.sub,
-      name: googleUserPayload.name,
-      email: googleUserPayload.email,
-    });
-  }
-
-  return user;
-};
 
 const generateAppToken = (user) => {
   return jwt.sign(
@@ -88,33 +27,25 @@ const setAuthCookie = (res, token) => {
   });
 };
 
-const loginWithGoogle = (req, res) => {
-  const googleAuthUrl = buildGoogleAuthUrl();
-  return res.json({
-    message: 'Google login URL generated successfully',
-    url: googleAuthUrl,
-  });
-};
+const loginWithGoogle = passport.authenticate('google', {
+  scope: ['profile', 'email'],
+  session: false,
+});
 
-const googleCallback = async (req, res) => {
-  const { code } = req.query;
+const googleCallback = (req, res, next) => {
+  passport.authenticate('google', {
+    failureRedirect: `${frontendOrigin}/login?error=google_auth_failed`,
+    session: false,
+  }, (error, user) => {
+    if (error || !user) {
+      console.error('Google OAuth failed:', error?.message || error);
+      return res.redirect(`${frontendOrigin}/login?error=google_auth_failed`);
+    }
 
-  if (!code) {
-    return res.status(400).json({ message: 'Missing Google OAuth code' });
-  }
-
-  try {
-    const tokenData = await exchangeGoogleCodeForTokens(code);
-    const googleUserPayload = await verifyGoogleUser(tokenData.id_token);
-    const user = await findOrCreateGoogleUser(googleUserPayload);
     const appToken = generateAppToken(user);
-
     setAuthCookie(res, appToken);
     return res.redirect(`${frontendOrigin}/drive`);
-  } catch (error) {
-    console.error('Google OAuth failed:', error.response?.data || error.message);
-    return res.status(400).json({ message: 'Google authentication failed' });
-  }
+  })(req, res, next);
 };
 
 const getCurrentUser = (req, res) => {
@@ -141,10 +72,6 @@ module.exports = {
   googleCallback,
   getCurrentUser,
   logout,
-  buildGoogleAuthUrl,
-  exchangeGoogleCodeForTokens,
-  verifyGoogleUser,
-  findOrCreateGoogleUser,
   generateAppToken,
   setAuthCookie,
 };

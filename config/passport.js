@@ -4,24 +4,27 @@ const JwtStrategy = require('passport-jwt').Strategy;
 const { ExtractJwt } = require('passport-jwt');
 const User = require('../models/user');
 
-const backendOrigin = (process.env.BACKEND_URL || 'http://localhost:5000').replace(/\/api$/, '').replace(/\/+$/, '');
+const frontendOrigin = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/api$/, '').replace(/\/+$/, '');
 
 passport.use(
   new GoogleStrategy(
     {
       clientID: process.env.GOOGLE_CLIENT_ID,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-      callbackURL: `${backendOrigin}/api/auth/callback`,
+      callbackURL: `${frontendOrigin}/api/auth/callback`,
     },
     async (accessToken, refreshToken, profile, done) => {
       try {
+        console.log(profile);
         const email = profile?.emails?.[0]?.value;
 
+        console.log(`${email} email`);
         if (!email) {
           return done(new Error('Google profile email not found'));
         }
 
         const isVerified = profile?._json?.email_verified === true;
+        console.log(`Verified: ${isVerified}`)
         if (!isVerified) {
           return done(new Error('Google email is not verified'));
         }
@@ -29,15 +32,18 @@ passport.use(
         let user = await User.findOne({ email });
 
         if (!user) {
-          user = await User.create({
-            googleId: profile.id,
-            name: profile.displayName,
-            email,
-          });
+            console.log('User creation started successfully');
+            user = await User.create({
+                googleId: profile.id,
+                name: profile.displayName,
+                email,
+            });
         }
 
+        console.log('User created successfully');
         return done(null, user);
-      } catch (error) {
+    } catch (error) {
+        console.log('Auth error');
         return done(error);
       }
     }

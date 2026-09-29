@@ -24,7 +24,22 @@ const getFolderStorageDir = async (userId, folderId) => {
         currentFolderId = currentFolder.parentFolderId || null;
     }
 
-    return path.join(storageRoot, String(userId), ...segments);
+    const userStorageRoot = path.resolve(storageRoot, String(userId));
+    const folderPath = path.resolve(userStorageRoot, ...segments);
+    const relativePath = path.relative(userStorageRoot, folderPath);
+
+    if (
+        !relativePath ||
+        relativePath === '..' ||
+        relativePath.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(relativePath)
+    ) {
+        const error = new Error('Folder path is outside the user storage directory');
+        error.code = 'ERR_STORAGE_PATH_ESCAPE';
+        throw error;
+    }
+
+    return folderPath;
 };
 
 const createFolder = async (req, res) => {
@@ -93,7 +108,7 @@ const renameFolder = async (req, res) => {
 const findFoldersByParentId = async (userId, folderId) => {
     if (folderId === 'root')
         folderId = null;
-    
+
     return await Folder.find({
         userId,
         parentFolderId: folderId
@@ -129,8 +144,69 @@ const fetchFolderContents = async (req, res) => {
     }
 }
 
+const deleteFolder = async (req, res) => {
+    try {
+        const { folderId } = req.params;
+        const userId = req.user.id;
+        const folder = await Folder.findOne({ _id: folderId, userId });
+
+        if (!folder) {
+            return res.status(404).json({ message: 'Folder not found' });
+        }
+
+        const folderPath = await getFolderStorageDir(userId, folder._id);
+        const folderIds = [folder._id];
+        const visitedIds = new Set([String(folder._id)]);
+
+        for (let index = 0; index < folderIds.length; index += 1) {
+            const children = await Folder.find({
+                userId,
+                parentFolderId: folderIds[index],
+            }).select('_id').lean();
+
+            for (const child of children) {
+                const childId = String(child._id);
+                if (!visitedIds.has(childId)) {
+                    visitedIds.add(childId);
+                    folderIds.push(child._id);
+                }
+            }
+        }
+
+        await fs.promises.rm(folderPath, { recursive: true, force: true });
+
+        await File.deleteMany({
+            userId,
+            folderId: { $in: folderIds },
+        });
+
+        await Folder.deleteMany({
+            userId,
+            _id: { $in: folderIds },
+        });
+
+        return res.status(200).json({
+            message: 'Folder and its contents deleted successfully',
+            folderId: String(folder._id),
+        });
+    } catch (error) {
+        console.error('Delete folder error:', error);
+
+        if (error.code === 'ERR_STORAGE_PATH_ESCAPE') {
+            return res.status(400).json({ message: 'Invalid folder storage path' });
+        }
+
+        if (error.name === 'CastError') {
+            return res.status(400).json({ message: 'Invalid folder ID' });
+        }
+
+        return res.status(500).json({ message: 'Folder deletion failed' });
+    }
+}
+
 module.exports = {
     createFolder,
     fetchFolderContents,
     renameFolder,
+    deleteFolder
 };

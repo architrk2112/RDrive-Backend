@@ -1,9 +1,35 @@
+const fs = require('fs');
+const path = require('path');
+
 const Folder = require("../models/folder");
 const File = require("../models/file");
 
+const storageRoot = path.join(__dirname, '../storage');
+
+const getFolderStorageDir = async (userId, folderId) => {
+    const segments = [];
+    let currentFolderId = folderId && folderId !== 'root' ? folderId : null;
+
+    while (currentFolderId) {
+        const currentFolder = await Folder.findOne({
+            _id: currentFolderId,
+            userId,
+        }).lean();
+
+        if (!currentFolder) {
+            break;
+        }
+
+        segments.unshift(currentFolder.name);
+        currentFolderId = currentFolder.parentFolderId || null;
+    }
+
+    return path.join(storageRoot, String(userId), ...segments);
+};
+
 const createFolder = async (req, res) => {
     try {
-        const { name, parentId } = req.body; 
+        const { name, parentId } = req.body;
         const userId = req.user.id;
 
         const folder = await Folder.create({
@@ -11,6 +37,9 @@ const createFolder = async (req, res) => {
             name,
             parentFolderId: parentId
         });
+
+        const folderPath = await getFolderStorageDir(userId, folder._id);
+        await fs.promises.mkdir(folderPath, { recursive: true });
 
         console.log(`Folder named ${name} created successfully!`);
         return res.status(201).json({
@@ -38,6 +67,14 @@ const renameFolder = async (req, res) => {
 
         if (!folderDoc) {
             return res.status(404).json({ message: 'Folder not found' });
+        }
+
+        const oldPath = await getFolderStorageDir(req.user.id, folderDoc._id);
+        const parentDir = path.dirname(oldPath);
+        const newPath = path.join(parentDir, trimmedName);
+
+        if (fs.existsSync(oldPath) && oldPath !== newPath) {
+            await fs.promises.rename(oldPath, newPath);
         }
 
         folderDoc.name = trimmedName;

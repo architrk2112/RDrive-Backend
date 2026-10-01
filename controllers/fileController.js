@@ -98,7 +98,7 @@ const uploadFile = async (req, res) => {
 
                 console.log(`Upload successful: ${file.originalname}`);
             } finally {
-                if(file.path) {
+                if (file.path) {
                     try {
                         await fs.promises.unlink(file.path);
                     } catch (error) {
@@ -144,6 +144,131 @@ const downloadFile = async (req, res) => {
     } catch (error) {
         console.error('Download error:', error);
         return res.status(500).json({ message: 'File download failed' });
+    }
+};
+
+const parseByteRange = (rangeHeader, fileSize) => {
+    const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader);
+    if (!match || (!match[1] && !match[2]) || fileSize === 0) {
+        return null;
+    }
+
+    let start;
+    let end;
+
+    if (!match[1]) {
+        const suffixLength = Number(match[2]);
+        if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) {
+            return null;
+        }
+        start = Math.max(fileSize - suffixLength, 0);
+        end = fileSize - 1;
+    } else {
+        start = Number(match[1]);
+        end = match[2] ? Number(match[2]) : fileSize - 1;
+
+        if (
+            !Number.isSafeInteger(start) ||
+            !Number.isSafeInteger(end) ||
+            start < 0 ||
+            end < start ||
+            start >= fileSize
+        ) {
+            return null;
+        }
+
+        end = Math.min(end, fileSize - 1);
+    }
+
+    return { start, end };
+};
+
+const viewFile = async (req, res) => {
+    try {
+        const fileDoc = await File.findOne({
+            _id: req.params.fileId,
+            userId: req.user.id,
+        });
+
+        if (!fileDoc) {
+            return res.status(404).json({
+                message: 'File not found',
+            });
+        }
+
+        const filePath = resolveStoragePath(fileDoc.storageKey);
+
+        let fileStats;
+        try {
+            fileStats = await fs.promises.stat(filePath);
+        } catch (error) {
+            if (error.code === 'ENOENT') {
+                return res.status(404).json({ message: 'File not found on disk' });
+            }
+            throw error;
+        }
+
+        if (!fileStats.isFile()) {
+            return res.status(404).json({
+                message: 'File not found on disk',
+            });
+        }
+
+        const rangeHeader = req.headers.range;
+        const rangeRequested = typeof rangeHeader === 'string' && /^bytes=/i.test(rangeHeader);
+        const byteRange = rangeRequested ? parseByteRange(rangeHeader, fileStats.size) : null;
+
+        if (rangeRequested && !byteRange) {
+            res.setHeader('Content-Range', `bytes */${fileStats.size}`);
+            return res.status(416).end();
+        }
+
+        res.setHeader('Accept-Ranges', 'bytes');
+        res.setHeader(
+            'Content-Type',
+            fileDoc.mimeType || 'application/octet-stream'
+        );
+
+        res.setHeader(
+            'Content-Disposition',
+            `inline; filename="${encodeURIComponent(fileDoc.name)}"`
+        );
+
+        const responseSize = byteRange
+            ? byteRange.end - byteRange.start + 1
+            : fileStats.size;
+        res.setHeader('Content-Length', responseSize);
+
+        if (byteRange) {
+            res.status(206);
+            res.setHeader(
+                'Content-Range',
+                `bytes ${byteRange.start}-${byteRange.end}/${fileStats.size}`
+            );
+        }
+
+        const stream = fs.createReadStream(
+            filePath,
+            byteRange ? { start: byteRange.start, end: byteRange.end } : undefined
+        );
+
+        stream.on('error', (error) => {
+            console.error('View file stream error:', error);
+            if (!res.headersSent) {
+                res.status(500).json({ message: 'Unable to stream file' });
+            } else {
+                res.destroy(error);
+            }
+        });
+
+        return stream.pipe(res);
+
+    } catch (error) {
+        console.error('View file error:', error);
+
+        return res.status(500).json({
+            message: 'Unable to view file',
+        });
     }
 };
 
@@ -253,6 +378,7 @@ module.exports = {
     upload,
     uploadFile,
     downloadFile,
+    viewFile,
     renameFile,
     updateFileVisibility,
     deleteFile,

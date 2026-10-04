@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const multer = require('multer');
 
 const File = require('../models/file');
@@ -19,7 +20,7 @@ const upload = multer({
                 .replace(/\s+/g, '-')
                 .replace(/[^a-zA-Z0-9._-]/g, '') || 'upload';
 
-            cb(null, `${Date.now()}-${safeBaseName}`);
+            cb(null, `${crypto.randomUUID()}-${safeBaseName}`);
         },
     }),
     limits: {
@@ -30,6 +31,63 @@ const upload = multer({
 const sanitizeFileName = (fileName = '') => {
     const safeName = String(fileName).replace(/\s+/g, '-').replace(/[^a-zA-Z0-9._-]/g, '');
     return safeName || `file-${Date.now()}`;
+};
+
+const sanitizeFolderName = (folderName) => {
+    const safeName = String(folderName).trim().replace(/[<>:"|?*\x00-\x1F]/g, '').replace(/[. ]+$/g, '');
+    if (!safeName || safeName === '.' || safeName === '..') {
+        const error = new Error('Invalid folder name in uploaded path');
+        error.code = 'INVALID_UPLOAD_PATH';
+        throw error;
+    }
+    return safeName;
+};
+
+const parseUploadPath = (relativePath, fallbackName) => {
+    const rawPath = String(relativePath || fallbackName || '').replace(/\\/g, '/');
+    const segments = rawPath.split('/');
+
+    if (
+        !rawPath ||
+        path.posix.isAbsolute(rawPath) ||
+        path.win32.isAbsolute(rawPath) ||
+        segments.some((segment) => !segment || segment === '.' || segment === '..')
+    ) {
+        const error = new Error('Invalid relative path for uploaded file');
+        error.code = 'INVALID_UPLOAD_PATH';
+        throw error;
+    }
+
+    const originalFileName = segments.pop();
+    const folderNames = segments.map(sanitizeFolderName);
+    return { folderNames, fileName: sanitizeFileName(originalFileName) };
+};
+
+const ensureUploadFolders = async (userId, parentFolderId, folderNames, basePath) => {
+    let currentParentId = parentFolderId;
+    let currentPath = basePath;
+
+    for (const name of folderNames) {
+        let folder = await Folder.findOne({
+            userId,
+            name,
+            parentFolderId: currentParentId,
+        });
+
+        if (!folder) {
+            folder = await Folder.create({
+                userId,
+                name,
+                parentFolderId: currentParentId,
+            });
+        }
+
+        currentParentId = folder._id;
+        currentPath = path.join(currentPath, folder.name);
+    }
+    await fs.promises.mkdir(currentPath, { recursive: true });
+
+    return { folderId: currentParentId, folderPath: currentPath };
 };
 
 const buildFolderPath = async (userId, folderId) => {
@@ -60,9 +118,9 @@ const resolveStoragePath = (storageKey) => {
 };
 
 const uploadFile = async (req, res) => {
-    try {
-        const files = Array.isArray(req.files) ? req.files : req.file ? [req.file] : [];
+    const files = Array.isArray(req.files) ? req.files : req.file ? [req.file] : [];
 
+    try {
         if (!files.length) {
             return res.status(400).json({ message: 'No file uploaded' });
         }
@@ -70,12 +128,37 @@ const uploadFile = async (req, res) => {
         const userId = req.user.id;
         const parentId = req.body.parentId ?? req.body.folderId;
         const folderId = parentId && parentId !== 'root' ? parentId : null;
+        const relativePaths = req.body.relativePaths
+            ? JSON.parse(req.body.relativePaths)
+            : files.map((file) => file.originalname);
+
+        if (!Array.isArray(relativePaths) || relativePaths.length !== files.length) {
+            const error = new Error('Invalid upload paths');
+            error.code = 'INVALID_UPLOAD_PATH';
+            throw error;
+        }
+
+        const uploadPaths = relativePaths.map((relativePath, index) =>
+            parseUploadPath(relativePath, files[index].originalname)
+        );
+
+        if (folderId) {
+            const parentFolder = await Folder.findOne({ _id: folderId, userId });
+            if (!parentFolder) {
+                const error = new Error('Destination folder not found');
+                error.code = 'UPLOAD_PARENT_NOT_FOUND';
+                throw error;
+            }
+        }
+
+        const baseFolderPath = await buildFolderPath(userId, folderId);
         const uploadedFiles = [];
 
-        for (const file of files) {
-            const safeName = sanitizeFileName(file.originalname);
-            const uniqueFileName = `${Date.now()}-${safeName}`;
-            const targetFolderPath = await buildFolderPath(userId, folderId);
+        for (const [index, file] of files.entries()) {
+            const { folderNames, fileName } = uploadPaths[index];
+            const destination = await ensureUploadFolders(userId, folderId, folderNames, baseFolderPath);
+            const uniqueFileName = `${Date.now()}-${Math.random().toString(36).slice(2)}-${fileName}`;
+            const targetFolderPath = destination.folderPath;
             const targetFilePath = path.join(targetFolderPath, uniqueFileName);
 
             try {
@@ -86,7 +169,7 @@ const uploadFile = async (req, res) => {
 
                 const fileDoc = await File.create({
                     userId,
-                    folderId,
+                    folderId: destination.folderId,
                     name: file.originalname,
                     size: file.size,
                     mimeType: file.mimetype,
@@ -116,6 +199,25 @@ const uploadFile = async (req, res) => {
         });
     } catch (error) {
         console.error('Upload error:', error);
+        await Promise.all(files.map(async (file) => {
+            if (!file.path) return;
+            try {
+                await fs.promises.unlink(file.path);
+            } catch (cleanupError) {
+                if (cleanupError.code !== 'ENOENT') {
+                    console.error('Failed to remove temporary upload:', cleanupError);
+                }
+            }
+        }));
+        if (error.code === 'INVALID_UPLOAD_PATH' || error instanceof SyntaxError) {
+            return res.status(400).json({ message: 'Invalid uploaded folder structure' });
+        }
+        if (error.code === 'UPLOAD_PARENT_NOT_FOUND') {
+            return res.status(404).json({ message: error.message });
+        }
+        if (error.name === 'CastError') {
+            return res.status(400).json({ message: 'Invalid destination folder ID' });
+        }
         return res.status(500).json({ message: 'File upload failed' });
     }
 };

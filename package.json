@@ -20,7 +20,7 @@
     "nodemon": "^3.1.14"
   },
   "scripts": {
-    "dev": "nodemon server.js",
+    "dev": "nodemon --ignore storage/ server.js",
     "start": "node server.js"
   }
 }

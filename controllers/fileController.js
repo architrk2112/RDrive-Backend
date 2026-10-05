@@ -173,7 +173,6 @@ const uploadFile = async (req, res) => {
                     name: file.originalname,
                     size: file.size,
                     mimeType: file.mimetype,
-                    visibility: req.body.visibility || 'private',
                     storageKey,
                 });
 
@@ -375,6 +374,8 @@ const viewFile = async (req, res) => {
 };
 
 const renameFile = async (req, res) => {
+    const fileId = req.params.fileId;
+
     try {
         const { name } = req.body;
         const trimmedName = String(name || '').trim();
@@ -383,67 +384,83 @@ const renameFile = async (req, res) => {
             return res.status(400).json({ message: 'File name is required' });
         }
 
+        console.log(`[File rename] Requested fileId=${fileId}, name="${trimmedName}"`);
+
         const fileDoc = await File.findOne({
-            _id: req.params.fileId,
+            _id: fileId,
             userId: req.user.id,
         });
 
         if (!fileDoc) {
+            console.warn(`[File rename] No file record found for fileId=${fileId}`);
             return res.status(404).json({ message: 'File not found' });
         }
 
-        const oldPath = resolveStoragePath(fileDoc.storageKey);
-        const directoryPath = path.dirname(oldPath);
-        const safeName = sanitizeFileName(trimmedName);
-        const uniqueFileName = `${Date.now()}-${safeName}`;
-        const newPath = path.join(directoryPath, uniqueFileName);
+        const storedPath = resolveStoragePath(fileDoc.storageKey);
+        const storedFileName = path.basename(String(fileDoc.storageKey || '').replace(/\\/g, '/'));
+        const currentFolderPath = await buildFolderPath(req.user.id, fileDoc.folderId);
+        let oldPath = path.join(currentFolderPath, storedFileName);
+        let sourceStats;
+        try {
+            sourceStats = await fs.promises.stat(oldPath);
+        } catch (error) {
+            if (error.code !== 'ENOENT') {
+                throw error;
+            }
 
-        if (fs.existsSync(oldPath) && oldPath !== newPath) {
-            await fs.promises.rename(oldPath, newPath);
+            console.log(`[File rename] Current folder path missed; checking stored path for fileId=${fileId}`);
+            oldPath = storedPath;
+            try {
+                sourceStats = await fs.promises.stat(oldPath);
+            } catch (storedPathError) {
+                if (storedPathError.code === 'ENOENT') {
+                    console.warn(`[File rename] File is missing at both current and stored paths for fileId=${fileId}`, {
+                        currentPath: path.join(currentFolderPath, storedFileName),
+                        storedPath,
+                    });
+                    return res.status(404).json({ message: 'File not found on disk' });
+                }
+                throw storedPathError;
+            }
         }
 
+        if (!sourceStats.isFile()) {
+            console.warn(`[File rename] Resolved path is not a file for fileId=${fileId}: ${oldPath}`);
+            return res.status(404).json({ message: 'File not found on disk' });
+        }
+
+        const directoryPath = path.dirname(oldPath);
+        const safeName = sanitizeFileName(trimmedName);
+        const uniqueFileName = `${Date.now()}-${crypto.randomUUID()}-${safeName}`;
+        const newPath = path.join(directoryPath, uniqueFileName);
+
+        console.log(`[File rename] Moving fileId=${fileId} from "${oldPath}" to "${newPath}"`);
+        await fs.promises.rename(oldPath, newPath);
+        console.log(`[File rename] Disk move completed for fileId=${fileId}`);
+
+        const oldName = fileDoc.name;
+        const oldStorageKey = fileDoc.storageKey;
         fileDoc.name = trimmedName;
         fileDoc.storageKey = path.relative(storageRoot, newPath).split(path.sep).join('/');
-        await fileDoc.save();
+        try {
+            await fileDoc.save();
+            console.log(`[File rename] Database update completed for fileId=${fileId}`);
+        } catch (error) {
+            console.error(`[File rename] Database update failed; restoring original path for fileId=${fileId}`, error);
+            fileDoc.name = oldName;
+            fileDoc.storageKey = oldStorageKey;
+            await fs.promises.rename(newPath, oldPath);
+            console.log(`[File rename] Original path restored for fileId=${fileId}`);
+            throw error;
+        }
 
         return res.status(200).json({
             message: 'File renamed successfully',
             file: fileDoc,
         });
     } catch (error) {
-        console.error('Rename file error:', error);
+        console.error(`[File rename] Failed for fileId=${fileId}:`, error);
         return res.status(500).json({ message: 'File rename failed' });
-    }
-};
-
-const updateFileVisibility = async (req, res) => {
-    try {
-        const { visibility } = req.body;
-        const allowedVisibility = ['public', 'private'];
-
-        if (!allowedVisibility.includes(visibility)) {
-            return res.status(400).json({ message: 'Invalid visibility value' });
-        }
-
-        const fileDoc = await File.findOne({
-            _id: req.params.fileId,
-            userId: req.user.id,
-        });
-
-        if (!fileDoc) {
-            return res.status(404).json({ message: 'File not found' });
-        }
-
-        fileDoc.visibility = visibility;
-        await fileDoc.save();
-
-        return res.status(200).json({
-            message: 'File visibility updated successfully',
-            file: fileDoc,
-        });
-    } catch (error) {
-        console.error('Visibility update error:', error);
-        return res.status(500).json({ message: 'File visibility update failed' });
     }
 };
 
@@ -482,6 +499,5 @@ module.exports = {
     downloadFile,
     viewFile,
     renameFile,
-    updateFileVisibility,
     deleteFile,
 };

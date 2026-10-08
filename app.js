@@ -9,6 +9,8 @@ const authRoutes = require('./routes/authRoutes');
 const dashboardRoutes = require('./routes/dashboardRoutes');
 const folderRoutes = require('./routes/folderRoutes');
 const fileRoutes = require('./routes/fileRoutes');
+const shareLinksRoutes = require('./routes/shareLinksRoutes');
+const publicShareRoutes = require('./routes/publicShareRoutes');
 
 const app = express();
 
@@ -36,5 +38,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/drive', dashboardRoutes);
 app.use('/api/folders', folderRoutes);
 app.use('/api/files', fileRoutes);
+app.use('/api/share-links', shareLinksRoutes);
+app.use('/api/public/shares', publicShareRoutes);
 
 module.exports = app;

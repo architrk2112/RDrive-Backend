@@ -1,11 +1,12 @@
 const express = require('express');
 const { requireAuth } = require('../middleware/authMiddleware');
-const { createShareLink, fetchAllShareLinks, revokeShareLink } = require('../controllers/shareLinksController');
+const { createShareLink, fetchAllShareLinks, revokeShareLink, deleteShareLink } = require('../controllers/shareLinksController');
 
 const router = express.Router();
 
 router.post('/', requireAuth, createShareLink);
 router.get('/', requireAuth, fetchAllShareLinks);
-router.delete('/:id', requireAuth, revokeShareLink);
+router.patch('/:id/revoke', requireAuth, revokeShareLink);
+router.delete('/:id', requireAuth, deleteShareLink);
 
 module.exports = router;

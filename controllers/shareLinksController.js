@@ -160,6 +160,12 @@ const revokeShareLink = async (req, res) => {
             });
         }
 
+        if (shareLink.status === 'revoked') {
+            return res.status(409).json({
+                message: 'This share link is already revoked.'
+            });
+        }
+
         shareLink.status = 'revoked';
         await shareLink.save();
 
@@ -176,4 +182,29 @@ const revokeShareLink = async (req, res) => {
     }
 };
 
-module.exports = { createShareLink, fetchAllShareLinks, revokeShareLink };
+const deleteShareLink = async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        const deletedShare = await ShareLink.findOneAndDelete({
+            _id: id,
+            userId: req.user.id
+        });
+
+        if (!deletedShare) {
+            return res.status(404).json({
+                message: 'Share link not found or you do not own it'
+            });
+        }
+
+        return res.status(200).json({
+            message: 'Share link deleted successfully',
+            deletedId: deletedShare._id
+        });
+    } catch (error) {
+        console.error('deleteShareLink error:', error);
+        return res.status(500).json({ message: 'Failed to delete share link', error: error.message });
+    }
+};
+
+module.exports = { createShareLink, fetchAllShareLinks, revokeShareLink, deleteShareLink };
